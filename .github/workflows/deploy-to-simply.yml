@@ -1,0 +1,151 @@
+﻿name: Deploy to Simply.com (MSDeploy)
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+env:
+  DOTNET_VERSION: "8.0.x"
+  PROJECT_PATH: "DiscordGuessGame.API.csproj"
+  PUBLISH_PATH: "./publish"
+  RUNTIME_IDENTIFIER: "win-x64"
+
+jobs:
+  build-api:
+    runs-on: windows-latest
+    outputs:
+      publish-path: ${{ steps.publish.outputs.publish_path || env.PUBLISH_PATH }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Generate production appsettings from secrets
+        shell: pwsh
+        env:
+          MYSQL_CONNECTION_STRING: ${{ secrets.MYSQL_CONNECTION_STRING }}
+        run: |
+          $required = @(
+            @{ Name = 'MYSQL_CONNECTION_STRING'; Value = $env:MYSQL_CONNECTION_STRING }
+          )
+
+          $missing = $required | Where-Object { -not $_.Value }
+          if ($missing) {
+            throw "Missing required secrets: $($missing.Name -join ', ')"
+          }
+
+          $config = @{
+            ConnectionStrings = @{
+              DefaultConnection = $env:MYSQL_CONNECTION_STRING
+            }
+            Logging = @{
+              LogLevel = @{
+                Default = 'Information'
+                Microsoft = 'Warning'
+                'Microsoft.Hosting.Lifetime' = 'Information'
+              }
+            }
+            AllowedHosts = '*'
+          }
+
+          $json = $config | ConvertTo-Json -Depth 5
+          Set-Content -Path 'appsettings.Production.json' -Value $json -Encoding UTF8
+
+      - name: Restore and build API
+        run: |
+          dotnet restore
+          dotnet build --configuration Release --no-restore
+
+      - name: Publish API
+        id: publish
+        run: |
+          dotnet publish ${{ env.PROJECT_PATH }} `
+            --configuration Release `
+            --runtime ${{ env.RUNTIME_IDENTIFIER }} `
+            --self-contained true `
+            --output ${{ env.PUBLISH_PATH }}
+          echo "publish_path=${{ env.PUBLISH_PATH }}" >> $env:GITHUB_OUTPUT
+
+      - name: Upload API artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-publish
+          path: ${{ env.PUBLISH_PATH }}/
+
+  deploy-api:
+    runs-on: windows-latest
+    needs: build-api
+
+    steps:
+      - name: Download API artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: api-publish
+          path: ${{ env.PUBLISH_PATH }}/
+
+      - name: Create app_offline.htm
+        shell: pwsh
+        run: |
+          $content = @"
+          <!DOCTYPE html>
+          <html>
+          <head>
+              <title>Application Offline</title>
+          </head>
+          <body>
+              <h1>Application Offline</h1>
+              <p>The application is currently offline for maintenance.</p>
+          </body>
+          </html>
+          "@
+          Set-Content -Path "${{ env.PUBLISH_PATH }}/app_offline.htm" -Value $content
+
+      - name: Deploy app_offline.htm to take app offline
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
+        with:
+          server: ${{ secrets.FTP_SERVER }}
+          username: ${{ secrets.FTP_USERNAME }}
+          password: ${{ secrets.FTP_PASSWORD }}
+          local-dir: ${{ env.PUBLISH_PATH }}/
+          server-dir: /discord.api/
+          dangerous-clean-slate: false
+
+      - name: Wait for app to go offline
+        shell: pwsh
+        run: Start-Sleep -Seconds 3
+
+      - name: Deploy API using FTP
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
+        with:
+          server: ${{ secrets.FTP_SERVER }}
+          username: ${{ secrets.FTP_USERNAME }}
+          password: ${{ secrets.FTP_PASSWORD }}
+          local-dir: ${{ env.PUBLISH_PATH }}/
+          server-dir: /discord.api/
+          dangerous-clean-slate: false
+
+      - name: Remove app_offline.htm from local publish folder
+        shell: pwsh
+        run: |
+          Remove-Item "${{ env.PUBLISH_PATH }}/app_offline.htm" -Force -ErrorAction SilentlyContinue
+          Write-Host "Removed app_offline.htm from local folder"
+
+      - name: Deploy to remove app_offline.htm from server
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
+        with:
+          server: ${{ secrets.FTP_SERVER }}
+          username: ${{ secrets.FTP_USERNAME }}
+          password: ${{ secrets.FTP_PASSWORD }}
+          local-dir: ${{ env.PUBLISH_PATH }}/
+          server-dir: /discord.api/
+          dangerous-clean-slate: false
+
+      - name: Wait for app to restart
+        shell: pwsh
+        run: Start-Sleep -Seconds 15
