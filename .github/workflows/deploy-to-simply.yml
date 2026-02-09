@@ -29,10 +29,14 @@ jobs:
       - name: Generate production appsettings from secrets
         shell: pwsh
         env:
-          MYSQL_CONNECTION_STRING: ${{ secrets.MYSQL_CONNECTION_STRING }}
+          DISCORD_CLIENT_ID: ${{ secrets.ClientId }}
+          DISCORD_CLIENT_SECRET: ${{ secrets.ClientSecret }}
+          DISCORD_BOT_TOKEN: ${{ secrets.BotToken }}
         run: |
           $required = @(
-            @{ Name = 'MYSQL_CONNECTION_STRING'; Value = $env:MYSQL_CONNECTION_STRING }
+            @{ Name = 'DISCORD_CLIENT_ID'; Value = $env:DISCORD_CLIENT_ID }
+            @{ Name = 'DISCORD_CLIENT_SECRET'; Value = $env:DISCORD_CLIENT_SECRET }
+            @{ Name = 'DISCORD_BOT_TOKEN'; Value = $env:DISCORD_BOT_TOKEN }
           )
 
           $missing = $required | Where-Object { -not $_.Value }
@@ -52,6 +56,12 @@ jobs:
               }
             }
             AllowedHosts = '*'
+            Discord = @{
+              ClientId = $env:DISCORD_CLIENT_ID
+              ClientSecret = $env:DISCORD_CLIENT_SECRET
+              BotToken = $env:DISCORD_BOT_TOKEN
+              RedirectUri = 'https://discord.api.sezginsahin.dk/api/auth/callback'
+            }
           }
 
           $json = $config | ConvertTo-Json -Depth 5
