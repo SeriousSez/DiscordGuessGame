@@ -327,6 +327,11 @@ CORS is configured to allow all origins in development. Adjust in `Program.cs` f
 - Bot must be invited to servers before they appear
 - User must be authenticated before calling guild endpoints
 
+## Legal
+
+- [Terms of Service](https://seriousez.github.io/DiscordGuessGame/terms.html)
+- [Privacy Policy](https://seriousez.github.io/DiscordGuessGame/privacy.html)
+
 ## License
 
 MIT
