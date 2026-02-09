@@ -22,7 +22,6 @@ public class GameController : ControllerBase
     [HttpGet("status")]
     public IActionResult GetStatus()
     {
-        Console.WriteLine($"Checking game status - Messages: {_gameService.GetMessageCount()}, Unique Authors: {_gameService.GetUniqueAuthorCount()}");
         return Ok(new
         {
             messagesLoaded = _gameService.GetMessageCount(),
