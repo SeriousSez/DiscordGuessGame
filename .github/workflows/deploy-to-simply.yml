@@ -8,7 +8,7 @@ on:
 
 env:
   DOTNET_VERSION: "8.0.x"
-  PROJECT_PATH: "DiscordGuessGame.API.csproj"
+  PROJECT_PATH: "DiscordGuessGame.csproj"
   PUBLISH_PATH: "./publish"
   RUNTIME_IDENTIFIER: "win-x64"
 
