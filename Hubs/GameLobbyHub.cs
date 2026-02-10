@@ -9,6 +9,13 @@ public class GameLobbyHub : Hub
     private readonly LobbyService _lobbyService;
     private readonly ILogger<GameLobbyHub> _logger;
 
+    public class JoinLobbyResult
+    {
+        public bool Success { get; set; }
+        public string? PlayerId { get; set; }
+        public string? Error { get; set; }
+    }
+
     public GameLobbyHub(LobbyService lobbyService, ILogger<GameLobbyHub> logger)
     {
         _lobbyService = lobbyService;
@@ -83,6 +90,12 @@ public class GameLobbyHub : Hub
             if (player == null)
                 return new JoinLobbyResult { Success = false, Error = "Failed to add player to lobby" };
 
+            // If the creator is joining, switch creator ID to the player ID for stable identity
+            if (lobby.CreatorId == Context.ConnectionId)
+            {
+                lobby.CreatorId = player.Id;
+            }
+
             // Map connection ID to player for tracking
             await Groups.AddToGroupAsync(Context.ConnectionId, $"lobby-{lobbyId}");
 
@@ -122,12 +135,43 @@ public class GameLobbyHub : Hub
         }
     }
 
+    // Player: Update name
+    public async Task UpdatePlayerName(string lobbyId, string playerId, string newName)
+    {
+        try
+        {
+            var trimmedName = (newName ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(trimmedName))
+            {
+                await Clients.Caller.SendAsync("Error", "Name cannot be empty");
+                return;
+            }
+
+            if (!_lobbyService.UpdatePlayerName(lobbyId, playerId, trimmedName))
+            {
+                await Clients.Caller.SendAsync("Error", "Player not found in lobby");
+                return;
+            }
+
+            var lobbyState = GetLobbyState(lobbyId);
+            await Clients.Group($"lobby-{lobbyId}").SendAsync("PlayerNameChanged", playerId, trimmedName, lobbyState);
+
+            _logger.LogInformation($"Player {playerId} updated name to {trimmedName}");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error updating player name");
+            await Clients.Caller.SendAsync("Error", ex.Message);
+        }
+    }
+
     // Creator: Start the game
     public async Task StartGame(string lobbyId)
     {
         try
         {
-            if (!_lobbyService.StartGame(lobbyId, Context.ConnectionId))
+            var creatorKey = Context.Items["PlayerId"] as string ?? Context.ConnectionId;
+            if (!_lobbyService.StartGame(lobbyId, creatorKey))
             {
                 await Clients.Caller.SendAsync("Error", "Only the creator can start the game");
                 return;

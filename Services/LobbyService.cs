@@ -85,6 +85,15 @@ public class LobbyService
         return true;
     }
 
+    public bool UpdatePlayerName(string lobbyId, string playerId, string newName)
+    {
+        var lobby = GetLobby(lobbyId);
+        if (lobby?.Players.TryGetValue(playerId, out var player) != true) return false;
+
+        player.Name = newName;
+        return true;
+    }
+
     public bool StartGame(string lobbyId, string creatorId)
     {
         var lobby = GetLobby(lobbyId);
