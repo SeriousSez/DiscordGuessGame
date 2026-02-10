@@ -29,13 +29,14 @@ public class AuthController : ControllerBase
     [HttpGet("login")]
     public IActionResult Login()
     {
-        var scope = "identify guilds dm_channels.read";
+        var scope = "identify+guilds";
         var authUrl = $"https://discord.com/api/oauth2/authorize" +
                      $"?client_id={_discordSettings.ClientId}" +
                      $"&redirect_uri={Uri.EscapeDataString(_discordSettings.RedirectUri)}" +
                      $"&response_type=code" +
-                     $"&scope={Uri.EscapeDataString(scope)}";
+                     $"&scope={scope}";
 
+        _logger.LogInformation("OAuth Login URL: {AuthUrl}", authUrl.Replace(_discordSettings.ClientId, "CLIENT_ID_HIDDEN"));
         return Ok(new { authUrl });
     }
 

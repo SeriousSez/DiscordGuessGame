@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authentication.Cookies;
 using DiscordGuessGame.Services;
 using DiscordGuessGame.Models;
+using DiscordGuessGame.Hubs;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -57,6 +58,9 @@ builder.Services.AddCors(options =>
 builder.Services.AddHttpClient();
 builder.Services.AddSingleton<DiscordBotService>();
 builder.Services.AddSingleton<GameService>();
+builder.Services.AddSingleton<LobbyService>();
+builder.Services.AddHostedService<LobbyCleanupService>();
+builder.Services.AddSignalR();
 
 var app = builder.Build();
 
@@ -74,6 +78,7 @@ app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();
+app.MapHub<GameLobbyHub>("/hubs/game-lobby");
 
 // Initialize Discord bot
 var botService = app.Services.GetRequiredService<DiscordBotService>();

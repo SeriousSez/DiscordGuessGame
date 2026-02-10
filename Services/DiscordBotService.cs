@@ -38,8 +38,38 @@ public class DiscordBotService
             return;
         }
 
-        await _client.LoginAsync(TokenType.Bot, _botToken);
-        await _client.StartAsync();
+        try
+        {
+            await _client.LoginAsync(TokenType.Bot, _botToken);
+            await _client.StartAsync();
+
+            // Wait for the bot to connect and cache guilds
+            var maxRetries = 50;
+            var retryCount = 0;
+            while (_client.Guilds.Count == 0 && retryCount < maxRetries)
+            {
+                await Task.Delay(100);
+                retryCount++;
+            }
+
+            if (_client.Guilds.Count > 0)
+            {
+                _logger.LogInformation("✅ Bot connected successfully. Cached {GuildCount} guilds. Guild IDs: {GuildIds}",
+                    _client.Guilds.Count,
+                    string.Join(", ", _client.Guilds.Select(g => $"{g.Name}({g.Id})")));
+            }
+            else
+            {
+                _logger.LogWarning("❌ Bot did not cache any guilds after {Timeout}ms. Bot token may be invalid or bot is not added to any servers.",
+                    maxRetries * 100);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "❌ Error starting Discord bot. Token may be invalid: {TokenStart}",
+                _botToken?.Substring(0, Math.Min(20, _botToken.Length)));
+            throw;
+        }
     }
 
     public async Task<List<DiscordMessage>> GetChannelMessagesAsync(ulong guildId, ulong channelId, int limit = 100)
@@ -165,63 +195,47 @@ public class DiscordBotService
 
     public async Task<List<(ulong Id, string Name)>> GetChannelsAsync(ulong guildId, string? userAccessToken = null)
     {
-        // First try to get channels from bot (fast path)
-        var guild = _client.GetGuild(guildId);
-        if (guild != null)
+        // Try multiple times to get the guild - it might not be fully cached yet
+        SocketGuild? guild = null;
+
+        for (int i = 0; i < 15; i++)
+        {
+            guild = _client.GetGuild(guildId);
+            if (guild != null)
+            {
+                break;
+            }
+
+            // Check if guild is in the collection (exists but not fully loaded)
+            if (_client.Guilds.Any(g => g.Id == guildId))
+            {
+                _logger.LogInformation("Guild {GuildId} is in bot's guild list but not fully loaded. Waiting... (attempt {Attempt}/15)", guildId, i + 1);
+                await Task.Delay(200);
+            }
+            else
+            {
+                break;
+            }
+        }
+
+        if (guild != null && guild.TextChannels.Count > 0)
         {
             var channels = guild.TextChannels
                 .Select(c => (c.Id, c.Name))
                 .ToList();
-            _logger.LogInformation("Bot found {Count} text channels in guild {GuildId}", channels.Count, guildId);
+            _logger.LogInformation("✅ Bot found {Count} text channels in guild {GuildId}", channels.Count, guildId);
             return channels;
         }
 
-        _logger.LogWarning("Bot not in guild {GuildId}, attempting to fetch channels via user token", guildId);
-
-        // If bot isn't in guild, try using user's access token
-        if (!string.IsNullOrEmpty(userAccessToken))
+        if (guild != null && guild.TextChannels.Count == 0)
         {
-            try
-            {
-                var httpClient = _httpClientFactory.CreateClient();
-                httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {userAccessToken}");
-
-                var response = await httpClient.GetAsync($"https://discord.com/api/guilds/{guildId}/channels");
-                _logger.LogInformation("Discord API channels response for guild {GuildId}: {StatusCode}", guildId, response.StatusCode);
-
-                if (response.IsSuccessStatusCode)
-                {
-                    var json = await response.Content.ReadAsStringAsync();
-                    var channels = JsonSerializer.Deserialize<JsonElement[]>(json);
-
-                    if (channels != null)
-                    {
-                        var textChannels = channels
-                            .Where(c => c.GetProperty("type").GetInt32() == 0) // Type 0 = text channel
-                            .Select(c =>
-                            {
-                                var id = ulong.Parse(c.GetProperty("id").GetString() ?? "0");
-                                var name = c.GetProperty("name").GetString() ?? "Unknown";
-                                return (id, name);
-                            }).ToList();
-
-                        _logger.LogInformation("Found {Count} text channels via API for guild {GuildId}", textChannels.Count, guildId);
-                        return textChannels;
-                    }
-                }
-                else
-                {
-                    var errorContent = await response.Content.ReadAsStringAsync();
-                    _logger.LogWarning("Discord API returned {StatusCode} for guild {GuildId}: {Error}", response.StatusCode, guildId, errorContent);
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error fetching channels from Discord API for guild {GuildId}", guildId);
-            }
+            _logger.LogWarning("Guild {GuildId} loaded but has 0 text channels. Guild has {TotalChannels} channels total.", guildId, guild.Channels.Count);
+            return new List<(ulong, string)>();
         }
 
-        _logger.LogWarning("No channels found for guild {GuildId}", guildId);
+        _logger.LogWarning("❌ Bot not in guild {GuildId}, cannot fetch channels. Bot is in: {BotGuildIds}",
+            guildId,
+            string.Join(", ", _client.Guilds.Select(g => $"{g.Name}({g.Id})")));
         return new List<(ulong, string)>();
     }
 

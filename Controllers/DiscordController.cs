@@ -30,7 +30,7 @@ public class DiscordController : ControllerBase
         {
             var accessToken = User.FindFirst("AccessToken")?.Value;
             var guilds = await _botService.GetGuildsAsync(accessToken);
-            return Ok(guilds.Select(g => new { id = g.Id, name = g.Name }));
+            return Ok(guilds.Select(g => new { id = g.Id.ToString(), name = g.Name }));
         }
         catch (Exception ex)
         {
@@ -46,7 +46,7 @@ public class DiscordController : ControllerBase
         {
             var accessToken = User.FindFirst("AccessToken")?.Value;
             var channels = await _botService.GetChannelsAsync(guildId, accessToken);
-            return Ok(channels.Select(c => new { id = c.Id, name = c.Name }));
+            return Ok(channels.Select(c => new { id = c.Id.ToString(), name = c.Name }));
         }
         catch (Exception ex)
         {
@@ -85,7 +85,7 @@ public class DiscordController : ControllerBase
 
             var dms = await _botService.GetDmsAsync(accessToken);
             _logger.LogInformation("Returning {Count} DMs to frontend", dms.Count);
-            return Ok(dms.Select(d => new { id = d.Id, name = d.Name }));
+            return Ok(dms.Select(d => new { id = d.Id.ToString(), name = d.Name }));
         }
         catch (Exception ex)
         {
@@ -103,20 +103,29 @@ public class DiscordController : ControllerBase
             var accessToken = User.FindFirst("AccessToken")?.Value;
             List<DiscordGuessGame.Models.DiscordMessage> messages;
 
+            // Parse string IDs to ulongs
+            bool isValidGuildId = ulong.TryParse(request.GuildId, out var guildId);
+            bool isValidChannelId = ulong.TryParse(request.ChannelId, out var channelId);
+
+            if (!isValidGuildId || !isValidChannelId)
+            {
+                return BadRequest(new { error = "Invalid guild or channel ID" });
+            }
+
             // Check if loading from DMs (guildId = 0)
-            if (request.GuildId == 0)
+            if (guildId == 0)
             {
                 if (string.IsNullOrEmpty(accessToken))
                 {
                     return Unauthorized("Access token required for DM messages");
                 }
-                messages = await _botService.GetDmMessagesAsync(request.ChannelId, accessToken, request.Limit);
+                messages = await _botService.GetDmMessagesAsync(channelId, accessToken, request.Limit);
             }
             else
             {
                 messages = await _botService.GetChannelMessagesAsync(
-                    request.GuildId,
-                    request.ChannelId,
+                    guildId,
+                    channelId,
                     request.Limit);
             }
 
@@ -135,11 +144,34 @@ public class DiscordController : ControllerBase
             return BadRequest(new { error = ex.Message });
         }
     }
+
+    [HttpGet("status")]
+    public IActionResult GetBotStatus()
+    {
+        try
+        {
+            var accessToken = User.FindFirst("AccessToken")?.Value;
+            var isAuthenticated = User.Identity?.IsAuthenticated ?? false;
+
+            return Ok(new
+            {
+                authenticated = isAuthenticated,
+                hasAccessToken = !string.IsNullOrEmpty(accessToken),
+                accessTokenLength = accessToken?.Length ?? 0,
+                username = User.FindFirst("name")?.Value ?? "Not found"
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting bot status");
+            return StatusCode(500, "Failed to get status");
+        }
+    }
 }
 
 public class LoadMessagesRequest
 {
-    public ulong GuildId { get; set; }
-    public ulong ChannelId { get; set; }
+    public string GuildId { get; set; } = "0";
+    public string ChannelId { get; set; } = "0";
     public int Limit { get; set; } = 100;
 }

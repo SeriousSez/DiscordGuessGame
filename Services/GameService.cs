@@ -19,17 +19,6 @@ public class GameService
             return null;
         }
 
-        // Get unique authors
-        var uniqueAuthors = _messagePool
-            .GroupBy(m => m.AuthorId)
-            .Where(g => g.Any())
-            .ToList();
-
-        if (uniqueAuthors.Count < numberOfOptions)
-        {
-            return null;
-        }
-
         // Select a random message
         var random = new Random();
         var selectedMessage = _messagePool[random.Next(_messagePool.Count)];
@@ -41,11 +30,15 @@ public class GameService
             AuthorName = selectedMessage.AuthorName
         };
 
-        // Get other random authors (excluding correct one)
-        var otherAuthors = uniqueAuthors
-            .Where(g => g.Key != selectedMessage.AuthorId)
+        // Get other authors by random sampling from messages
+        var otherMessages = _messagePool
+            .Where(m => m.AuthorId != selectedMessage.AuthorId)
             .OrderBy(_ => random.Next())
             .Take(numberOfOptions - 1)
+            .ToList();
+
+        var otherAuthors = otherMessages
+            .GroupBy(m => m.AuthorId)
             .Select(g => new GameOption
             {
                 AuthorId = g.Key,
@@ -53,9 +46,35 @@ public class GameService
             })
             .ToList();
 
+        // If not enough unique other authors, include any other messages as options
+        if (otherAuthors.Count < numberOfOptions - 1)
+        {
+            otherAuthors = _messagePool
+                .Where(m => m.AuthorId != selectedMessage.AuthorId)
+                .Select(m => new GameOption
+                {
+                    AuthorId = m.AuthorId,
+                    AuthorName = m.AuthorName
+                })
+                .Distinct(new GameOptionComparer())
+                .OrderBy(_ => random.Next())
+                .Take(numberOfOptions - 1)
+                .ToList();
+        }
+
+        // If still not enough different authors, just use the same author as filler options
+        while (otherAuthors.Count < numberOfOptions - 1)
+        {
+            otherAuthors.Add(new GameOption
+            {
+                AuthorId = selectedMessage.AuthorId,
+                AuthorName = selectedMessage.AuthorName
+            });
+        }
+
         // Combine and shuffle options
         var options = new List<GameOption> { correctAuthor };
-        options.AddRange(otherAuthors);
+        options.AddRange(otherAuthors.Take(numberOfOptions - 1));
         options = options.OrderBy(_ => random.Next()).ToList();
 
         var round = new GameRound
@@ -91,4 +110,18 @@ public class GameService
     public int GetMessageCount() => _messagePool.Count;
 
     public int GetUniqueAuthorCount() => _messagePool.Select(m => m.AuthorId).Distinct().Count();
+
+    private class GameOptionComparer : IEqualityComparer<GameOption>
+    {
+        public bool Equals(GameOption? x, GameOption? y)
+        {
+            if (x == null || y == null) return x == y;
+            return x.AuthorId == y.AuthorId;
+        }
+
+        public int GetHashCode(GameOption obj)
+        {
+            return obj.AuthorId.GetHashCode();
+        }
+    }
 }
