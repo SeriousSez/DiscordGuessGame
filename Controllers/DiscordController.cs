@@ -135,7 +135,8 @@ public class DiscordController : ControllerBase
             {
                 message = "Messages loaded successfully",
                 totalMessages = messages.Count,
-                uniqueAuthors = _gameService.GetUniqueAuthorCount()
+                uniqueAuthors = _gameService.GetUniqueAuthorCount(),
+                messages = messages
             });
         }
         catch (Exception ex)

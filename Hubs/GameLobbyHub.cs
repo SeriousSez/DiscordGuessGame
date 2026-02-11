@@ -165,6 +165,47 @@ public class GameLobbyHub : Hub
         }
     }
 
+    // Player: Send chat message
+    public async Task SendChatMessage(string lobbyId, string playerId, string message)
+    {
+        try
+        {
+            var trimmedMessage = (message ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(trimmedMessage))
+            {
+                return;
+            }
+
+            var lobby = _lobbyService.GetLobby(lobbyId);
+            if (lobby == null)
+            {
+                await Clients.Caller.SendAsync("Error", "Lobby not found");
+                return;
+            }
+
+            if (!lobby.Players.TryGetValue(playerId, out var player))
+            {
+                await Clients.Caller.SendAsync("Error", "Player not found in lobby");
+                return;
+            }
+
+            await Clients.Group($"lobby-{lobbyId}").SendAsync("ChatMessage", new
+            {
+                playerId,
+                playerName = player.Name,
+                message = trimmedMessage,
+                timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+            });
+
+            _logger.LogInformation($"Chat message from {playerId} in lobby {lobbyId}: {trimmedMessage}");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error sending chat message");
+            await Clients.Caller.SendAsync("Error", ex.Message);
+        }
+    }
+
     // Creator: Start the game
     public async Task StartGame(string lobbyId)
     {
@@ -180,13 +221,10 @@ public class GameLobbyHub : Hub
             var lobbyState = GetLobbyState(lobbyId);
             await Clients.Group($"lobby-{lobbyId}").SendAsync("GameStarting", lobbyState);
 
-            // Start first round after brief delay
-            _ = Task.Delay(1000).ContinueWith(async _ =>
-            {
-                await StartNextRound(lobbyId);
-            });
+            _logger.LogInformation($"Game started in lobby {lobbyId}, starting first round");
 
-            _logger.LogInformation($"Game started in lobby {lobbyId}");
+            // Start first round immediately
+            await StartNextRound(lobbyId);
         }
         catch (Exception ex)
         {
@@ -209,10 +247,23 @@ public class GameLobbyHub : Hub
                 return;
             }
 
+            _logger.LogInformation($"=== ROUND CREATED FOR LOBBY {lobbyId} ===");
+            _logger.LogInformation($"Round ID: {round.Id}");
+            _logger.LogInformation($"Message: {round.Message?.Content} (AuthorId: {round.Message?.AuthorId}, AuthorName: {round.Message?.AuthorName})");
+            _logger.LogInformation($"Options count: {round.Options?.Count ?? 0}");
+            if (round.Options != null)
+            {
+                for (int i = 0; i < round.Options.Count; i++)
+                {
+                    _logger.LogInformation($"  Option {i}: AuthorId={round.Options[i].AuthorId}, AuthorName={round.Options[i].AuthorName}");
+                }
+            }
+            _logger.LogInformation($"====================================");
+
             var lobbyState = GetLobbyState(lobbyId);
             await Clients.Group($"lobby-{lobbyId}").SendAsync("RoundStarted", round, lobbyState);
 
-            _logger.LogInformation($"Round {lobbyState} started in lobby {lobbyId}");
+            _logger.LogInformation($"Round {round.Id} started in lobby {lobbyId}");
         }
         catch (Exception ex)
         {
@@ -226,16 +277,19 @@ public class GameLobbyHub : Hub
     {
         try
         {
-            var results = _lobbyService.SubmitAnswer(lobbyId, playerId, selectedAuthorId, elapsedMs);
+            var (results, allPlayersAnswered) = _lobbyService.SubmitAnswer(lobbyId, playerId, selectedAuthorId, elapsedMs);
 
             // Notify all players of answer submission
             await Clients.Group($"lobby-{lobbyId}").SendAsync("AnswerSubmitted", playerId);
 
-            // Check if all players have answered or time is up
-            // For now, we'll assume time management is done on client side
-            // In production, you'd implement proper server-side timeout handling
+            _logger.LogInformation($"Player {playerId} answered in lobby {lobbyId}. All answered: {allPlayersAnswered}");
 
-            _logger.LogInformation($"Player {playerId} answered in lobby {lobbyId}");
+            // If all players have answered, automatically end the round
+            if (allPlayersAnswered)
+            {
+                _logger.LogInformation($"All players answered in lobby {lobbyId}, ending round automatically");
+                await EndRound(lobbyId);
+            }
         }
         catch (Exception ex)
         {
@@ -256,8 +310,8 @@ public class GameLobbyHub : Hub
 
             _logger.LogInformation($"Round ended in lobby {lobbyId}");
 
-            // Wait before starting next round
-            await Task.Delay(3000);
+            // Wait 7 seconds before starting next round to show results
+            await Task.Delay(7000);
             await StartNextRound(lobbyId);
         }
         catch (Exception ex)

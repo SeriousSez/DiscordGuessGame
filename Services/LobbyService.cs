@@ -133,6 +133,8 @@ public class LobbyService
         lobby.CurrentRound = round;
         lobby.State = LobbyState.RoundActive;
         lobby.CurrentRoundIndex++;
+        lobby.CurrentRoundAnsweredPlayers.Clear(); // Reset for new round
+        lobby.CurrentRoundAnswerCounter = 0; // Reset answer order counter
 
         return round;
     }
@@ -184,27 +186,48 @@ public class LobbyService
         };
     }
 
-    public RoundResults? SubmitAnswer(string lobbyId, string playerId, string selectedAuthorId, int elapsedMs)
+    public (RoundResults? results, bool allPlayersAnswered) SubmitAnswer(string lobbyId, string playerId, string selectedAuthorId, int elapsedMs)
     {
         var lobby = GetLobby(lobbyId);
-        if (lobby?.CurrentRound == null) return null;
-        if (!lobby.Players.TryGetValue(playerId, out var player)) return null;
+        if (lobby?.CurrentRound == null) return (null, false);
+        if (!lobby.Players.TryGetValue(playerId, out var player)) return (null, false);
 
         var isCorrect = lobby.CurrentRound.Message.AuthorId == selectedAuthorId;
 
-        int points = 0;
+        double points = 0;
         if (isCorrect)
         {
-            if (elapsedMs <= 5000) points = 10;
-            else if (elapsedMs <= 15000) points = 7;
-            else points = 4;
+            // Track answer order only for correct answers (1st, 2nd, 3rd, etc.)
+            lobby.CurrentRoundAnswerCounter++;
+            player.LastAnswerOrder = lobby.CurrentRoundAnswerCounter;
+
+            // Award points based on answer order (primary factor):
+            // 1st correct: 100 base, 2nd: 90 base, 3rd: 80 base, etc.
+            double basePoints = Math.Max(10.0, 110.0 - (lobby.CurrentRoundAnswerCounter * 10.0));
+
+            // Apply time penalty (secondary factor): slower answers lose up to -9.99 points
+            // Fast answer (0ms) = 0 penalty, slow answer (30s) = -9.99 penalty
+            // This ensures order is dominant but time still matters within the same order position
+            double timePenalty = (elapsedMs / 30000.0) * 9.99;
+
+            points = Math.Max(0.1, basePoints - timePenalty); // Floor at 0.1 to prevent negative scores
+        }
+        else
+        {
+            player.LastAnswerOrder = null; // No order for incorrect answers
         }
 
         player.Score += points;
         player.LastAnswerCorrect = isCorrect;
         player.LastAnswerTimeMs = elapsedMs;
 
-        return GetRoundResults(lobbyId);
+        // Track that this player has answered
+        lobby.CurrentRoundAnsweredPlayers.Add(playerId);
+
+        // Check if all players have answered
+        bool allAnswered = lobby.CurrentRoundAnsweredPlayers.Count >= lobby.Players.Count;
+
+        return (GetRoundResults(lobbyId), allAnswered);
     }
 
     public RoundResults? GetRoundResults(string lobbyId)
@@ -230,23 +253,34 @@ public class LobbyService
         return results;
     }
 
-    private int CalculatePoints(LobbyPlayer player)
+    private double CalculatePoints(LobbyPlayer player)
     {
         if (player.LastAnswerCorrect != true) return 0;
+        var answerOrder = player.LastAnswerOrder ?? 99;
         var elapsedMs = player.LastAnswerTimeMs ?? 30000;
-        if (elapsedMs <= 5000) return 10;
-        if (elapsedMs <= 15000) return 7;
-        return 4;
+
+        // Base points from order
+        double basePoints = Math.Max(10.0, 110.0 - (answerOrder * 10.0));
+
+        // Time penalty: slower answers lose up to -9.99 points
+        double timePenalty = (elapsedMs / 30000.0) * 9.99;
+
+        return Math.Max(0.1, basePoints - timePenalty); // Floor at 0.1 to prevent negative scores
     }
 
-    public List<(string PlayerId, string Name, int Score)> GetLeaderboard(string lobbyId)
+    public List<LeaderboardEntry> GetLeaderboard(string lobbyId)
     {
         var lobby = GetLobby(lobbyId);
         if (lobby == null) return new();
 
         return lobby.Players.Values
             .OrderByDescending(p => p.Score)
-            .Select(p => (p.Id, p.Name, p.Score))
+            .Select(p => new LeaderboardEntry
+            {
+                PlayerId = p.Id,
+                Name = p.Name,
+                Score = p.Score
+            })
             .ToList();
     }
 
