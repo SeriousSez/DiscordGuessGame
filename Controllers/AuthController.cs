@@ -53,34 +53,45 @@ public class AuthController : ControllerBase
             // Exchange code for access token
             var httpClient = _httpClientFactory.CreateClient();
 
-            _logger.LogInformation("Token exchange request - ClientId: {ClientId}, ClientSecret length: {SecretLength}, Code: {Code}, RedirectUri: {RedirectUri}",
+            _logger.LogInformation("Token exchange request - ClientId: {ClientId}, ClientSecret length: {SecretLength}, ClientSecret first 4: {SecretStart}, Code length: {CodeLength}, RedirectUri: {RedirectUri}",
                 _discordSettings.ClientId,
                 _discordSettings.ClientSecret?.Length ?? 0,
-                code?.Substring(0, Math.Min(10, code?.Length ?? 0)),
+                _discordSettings.ClientSecret?.Length > 4 ? _discordSettings.ClientSecret.Substring(0, 4) + "..." : "N/A",
+                code?.Length ?? 0,
+                _discordSettings.RedirectUri);
+
+            var requestContent = new FormUrlEncodedContent(new Dictionary<string, string>
+            {
+                ["client_id"] = _discordSettings.ClientId,
+                ["client_secret"] = _discordSettings.ClientSecret,
+                ["grant_type"] = "authorization_code",
+                ["code"] = code,
+                ["redirect_uri"] = _discordSettings.RedirectUri
+            });
+
+            _logger.LogInformation("Sending token exchange request with body: client_id={ClientId}, client_secret_length={SecretLen}, grant_type=authorization_code, code_length={CodeLen}, redirect_uri={RedirectUri}",
+                _discordSettings.ClientId,
+                _discordSettings.ClientSecret?.Length ?? 0,
+                code?.Length ?? 0,
                 _discordSettings.RedirectUri);
 
             var tokenResponse = await httpClient.PostAsync(
                 "https://discord.com/api/oauth2/token",
-                new FormUrlEncodedContent(new Dictionary<string, string>
-                {
-                    ["client_id"] = _discordSettings.ClientId,
-                    ["client_secret"] = _discordSettings.ClientSecret,
-                    ["grant_type"] = "authorization_code",
-                    ["code"] = code,
-                    ["redirect_uri"] = _discordSettings.RedirectUri
-                }));
+                requestContent);
+
+            var responseBody = await tokenResponse.Content.ReadAsStringAsync();
 
             if (!tokenResponse.IsSuccessStatusCode)
             {
-                var errorBody = await tokenResponse.Content.ReadAsStringAsync();
-                _logger.LogError("Failed to exchange code for token: {StatusCode}, Body: {Body}",
-                    tokenResponse.StatusCode, errorBody);
-                return BadRequest("Failed to exchange code for token");
+                _logger.LogError("Failed to exchange code for token: StatusCode={StatusCode}, ErrorBody={ErrorBody}, ClientSecret issue: {SecretCheck}",
+                    tokenResponse.StatusCode,
+                    responseBody,
+                    string.IsNullOrEmpty(_discordSettings.ClientSecret) ? "EMPTY" : "SET");
+                return BadRequest($"Failed to exchange code for token: {responseBody}");
             }
 
-            var tokenJson = await tokenResponse.Content.ReadAsStringAsync();
-            _logger.LogInformation("Token exchange response: {TokenJson}", tokenJson);
-            var tokenData = JsonSerializer.Deserialize<JsonElement>(tokenJson);
+            _logger.LogInformation("Token exchange successful: {TokenResponse}", responseBody);
+            var tokenData = JsonSerializer.Deserialize<JsonElement>(responseBody);
             var accessToken = tokenData.GetProperty("access_token").GetString();
 
             _logger.LogInformation("Extracted access token length: {Length}, starts with: {Start}",
@@ -89,11 +100,14 @@ public class AuthController : ControllerBase
 
 
             // Get user info
+            httpClient.DefaultRequestHeaders.Clear();
             httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {accessToken}");
             var userResponse = await httpClient.GetAsync("https://discord.com/api/users/@me");
 
             if (!userResponse.IsSuccessStatusCode)
             {
+                var userErrorBody = await userResponse.Content.ReadAsStringAsync();
+                _logger.LogError("Failed to get user info: {StatusCode}, Body: {Body}", userResponse.StatusCode, userErrorBody);
                 return BadRequest("Failed to get user info");
             }
 

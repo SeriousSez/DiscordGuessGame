@@ -8,4 +8,13 @@ public class DiscordMessage
     public string AuthorName { get; set; } = string.Empty;
     public DateTime Timestamp { get; set; }
     public string ChannelId { get; set; } = string.Empty;
+
+    // Mentions - map of UserID to Username
+    public Dictionary<string, string> Mentions { get; set; } = new();
+
+    // Attachment URLs
+    public List<string> AttachmentUrls { get; set; } = new();
+
+    // Embed image URLs
+    public List<string> EmbedImageUrls { get; set; } = new();
 }

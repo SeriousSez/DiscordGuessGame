@@ -17,8 +17,11 @@ public class GameLobby
     public string CreatorId { get; set; } = "";
     public string GuildId { get; set; } = "";
     public string ChannelId { get; set; } = "";
+    public string ChannelName { get; set; } = "";
+    public string GuildName { get; set; } = "";
     public bool UseDms { get; set; }
     public List<DiscordMessage> LoadedMessages { get; set; } = new();
+    public List<DiscordMessage> RemainingMessages { get; set; } = new();
     public Dictionary<string, LobbyPlayer> Players { get; set; } = new();
     public LobbyState State { get; set; } = LobbyState.Waiting;
     public int CurrentRoundIndex { get; set; }

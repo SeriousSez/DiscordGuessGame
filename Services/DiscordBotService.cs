@@ -92,20 +92,55 @@ public class DiscordBotService
             throw new Exception($"Channel {channelId} not found in guild {guildId}");
         }
 
-        var messages = await channel.GetMessagesAsync(limit).FlattenAsync();
+        // Fetch more messages to account for filtering (bots and empty messages)
+        // Request up to 2x the limit to ensure we get enough after filtering
+        int requestLimit = Math.Min(limit * 2, 1000); // Discord API max is 100 per page, so cap at reasonable amount
+        var messages = await channel.GetMessagesAsync(requestLimit).FlattenAsync();
 
-        return messages
-            .Where(m => !string.IsNullOrWhiteSpace(m.Content) && !m.Author.IsBot)
-            .Select(m => new DiscordMessage
+        var filtered = messages
+            .Where(m =>
             {
-                MessageId = m.Id.ToString(),
-                Content = m.Content,
-                AuthorId = m.Author.Id.ToString(),
-                AuthorName = m.Author.Username,
-                Timestamp = m.Timestamp.UtcDateTime,
-                ChannelId = channelId.ToString()
+                var hasContent = !string.IsNullOrWhiteSpace(m.Content);
+                var hasAttachments = m.Attachments.Any();
+                var hasEmbedImages = m.Embeds.Any(e => e.Image.HasValue);
+                return !m.Author.IsBot && (hasContent || hasAttachments || hasEmbedImages);
             })
+            .Select(m =>
+            {
+                // Build mentions dictionary from mentioned user IDs
+                var mentions = new Dictionary<string, string>();
+                foreach (var userId in m.MentionedUserIds)
+                {
+                    var user = guild.GetUser(userId);
+                    if (user != null)
+                    {
+                        mentions[userId.ToString()] = user.Username;
+                    }
+                }
+
+                return new DiscordMessage
+                {
+                    MessageId = m.Id.ToString(),
+                    Content = m.Content,
+                    AuthorId = m.Author.Id.ToString(),
+                    AuthorName = m.Author.Username,
+                    Timestamp = m.Timestamp.UtcDateTime,
+                    ChannelId = channelId.ToString(),
+                    // Capture mentions
+                    Mentions = mentions,
+                    // Capture attachment URLs
+                    AttachmentUrls = m.Attachments.Select(a => a.ProxyUrl).ToList(),
+                    // Capture embed image URLs
+                    EmbedImageUrls = m.Embeds
+                        .Where(e => e.Image.HasValue)
+                        .Select(e => e.Image.Value.ProxyUrl)
+                        .ToList()
+                };
+            })
+            .Take(limit)  // Return only up to the requested limit
             .ToList();
+
+        return filtered;
     }
 
     public async Task<List<DiscordMessage>> GetDmMessagesAsync(ulong channelId, string userAccessToken, int limit = 100)
@@ -120,7 +155,9 @@ public class DiscordBotService
             var httpClient = _httpClientFactory.CreateClient();
             httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {userAccessToken}");
 
-            var response = await httpClient.GetAsync($"https://discord.com/api/channels/{channelId}/messages?limit={limit}");
+            // Request 2x limit to account for filtering (bots and empty messages)
+            int requestLimit = Math.Min(limit * 2, 100); // Discord API max is 100 per request
+            var response = await httpClient.GetAsync($"https://discord.com/api/channels/{channelId}/messages?limit={requestLimit}");
             if (!response.IsSuccessStatusCode)
             {
                 throw new Exception($"Failed to fetch DM messages: {response.StatusCode}");
@@ -135,11 +172,58 @@ public class DiscordBotService
                     var content = m.GetProperty("content").GetString();
                     var author = m.GetProperty("author");
                     var isBot = author.GetProperty("bot").GetBoolean();
-                    return !string.IsNullOrWhiteSpace(content) && !isBot;
+                    var hasContent = !string.IsNullOrWhiteSpace(content);
+                    var hasAttachments = m.TryGetProperty("attachments", out var attachmentsArray)
+                                         && attachmentsArray.ValueKind == JsonValueKind.Array
+                                         && attachmentsArray.GetArrayLength() > 0;
+                    var hasEmbedImages = m.TryGetProperty("embeds", out var embedsArray)
+                                         && embedsArray.ValueKind == JsonValueKind.Array
+                                         && embedsArray.EnumerateArray().Any(e => e.TryGetProperty("image", out _));
+                    return !isBot && (hasContent || hasAttachments || hasEmbedImages);
                 })
                 .Select(m =>
                 {
                     var author = m.GetProperty("author");
+                    var mentions = new Dictionary<string, string>();
+                    var attachmentUrls = new List<string>();
+                    var embedImageUrls = new List<string>();
+
+                    // Extract mentions from the raw JSON
+                    if (m.TryGetProperty("mentions", out var mentionsArray))
+                    {
+                        foreach (var mention in mentionsArray.EnumerateArray())
+                        {
+                            var userId = mention.GetProperty("id").GetString() ?? "";
+                            var username = mention.GetProperty("username").GetString() ?? "Unknown";
+                            mentions[userId] = username;
+                        }
+                    }
+
+                    // Extract attachment URLs
+                    if (m.TryGetProperty("attachments", out var attachmentsArray))
+                    {
+                        foreach (var attachment in attachmentsArray.EnumerateArray())
+                        {
+                            var url = attachment.GetProperty("proxy_url").GetString();
+                            if (!string.IsNullOrEmpty(url))
+                                attachmentUrls.Add(url);
+                        }
+                    }
+
+                    // Extract embed image URLs
+                    if (m.TryGetProperty("embeds", out var embedsArray))
+                    {
+                        foreach (var embed in embedsArray.EnumerateArray())
+                        {
+                            if (embed.TryGetProperty("image", out var image))
+                            {
+                                var imageUrl = image.GetProperty("proxy_url").GetString();
+                                if (!string.IsNullOrEmpty(imageUrl))
+                                    embedImageUrls.Add(imageUrl);
+                            }
+                        }
+                    }
+
                     return new DiscordMessage
                     {
                         MessageId = m.GetProperty("id").GetString() ?? "",
@@ -147,9 +231,13 @@ public class DiscordBotService
                         AuthorId = author.GetProperty("id").GetString() ?? "",
                         AuthorName = author.GetProperty("username").GetString() ?? "Unknown",
                         Timestamp = DateTime.Parse(m.GetProperty("timestamp").GetString() ?? DateTime.UtcNow.ToString()),
-                        ChannelId = channelId.ToString()
+                        ChannelId = channelId.ToString(),
+                        Mentions = mentions,
+                        AttachmentUrls = attachmentUrls,
+                        EmbedImageUrls = embedImageUrls
                     };
                 })
+                .Take(limit)  // Return only up to the requested limit
                 .ToList();
         }
         catch (Exception ex)

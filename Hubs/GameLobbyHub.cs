@@ -38,7 +38,7 @@ public class GameLobbyHub : Hub
     }
 
     // Lobby Creator: Create a lobby after loading messages
-    public async Task<string> CreateLobby(string guildId, string channelId, bool useDms, List<DiscordMessage> messages, int messageLimit, int secondsPerRound = 30)
+    public async Task<string> CreateLobby(string guildId, string channelId, string channelName, string guildName, bool useDms, List<DiscordMessage> messages, int messageLimit, int secondsPerRound = 30)
     {
         try
         {
@@ -51,6 +51,8 @@ public class GameLobbyHub : Hub
                 messageLimit
             );
 
+            lobby.ChannelName = channelName;
+            lobby.GuildName = guildName;
             lobby.SecondsPerRound = secondsPerRound;
             await Groups.AddToGroupAsync(Context.ConnectionId, $"lobby-{lobby.Id}");
 
@@ -206,6 +208,35 @@ public class GameLobbyHub : Hub
         }
     }
 
+    // Creator: Reload messages for a new game in the same lobby
+    public async Task ReloadMessages(string lobbyId, List<Models.DiscordMessage> messages)
+    {
+        try
+        {
+            var creatorKey = Context.Items["PlayerId"] as string ?? Context.ConnectionId;
+            var lobby = _lobbyService.GetLobby(lobbyId);
+
+            if (lobby == null || lobby.CreatorId != creatorKey)
+            {
+                await Clients.Caller.SendAsync("Error", "Only the creator can reload messages");
+                return;
+            }
+
+            if (!_lobbyService.ReloadMessages(lobbyId, messages))
+            {
+                await Clients.Caller.SendAsync("Error", "Failed to reload messages");
+                return;
+            }
+
+            _logger.LogInformation($"Messages reloaded in lobby {lobbyId}");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error reloading messages");
+            await Clients.Caller.SendAsync("Error", ex.Message);
+        }
+    }
+
     // Creator: Start the game
     public async Task StartGame(string lobbyId)
     {
@@ -333,6 +364,8 @@ public class GameLobbyHub : Hub
             state = lobby.State.ToString(),
             currentRound = lobby.CurrentRoundIndex,
             totalRounds = lobby.LoadedMessages.Count,
+            channelName = lobby.ChannelName,
+            guildName = lobby.GuildName,
             players = lobby.Players.Select(p => new
             {
                 id = p.Key,

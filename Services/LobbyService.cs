@@ -23,6 +23,7 @@ public class LobbyService
             ChannelId = channelId,
             UseDms = useDms,
             LoadedMessages = messages,
+            RemainingMessages = messages.ToList(),
             MessageLimit = messageLimit
         };
 
@@ -94,6 +95,19 @@ public class LobbyService
         return true;
     }
 
+    public bool ReloadMessages(string lobbyId, List<DiscordMessage> newMessages)
+    {
+        var lobby = GetLobby(lobbyId);
+        if (lobby == null) return false;
+
+        // Replace remaining messages with new ones
+        lobby.RemainingMessages = newMessages.ToList();
+        lobby.LoadedMessages = newMessages;
+
+        _logger.LogInformation($"Reloaded {newMessages.Count} messages for lobby {lobbyId}");
+        return true;
+    }
+
     public bool StartGame(string lobbyId, string creatorId)
     {
         var lobby = GetLobby(lobbyId);
@@ -116,18 +130,23 @@ public class LobbyService
             return null;
         }
 
-        if (lobby.CurrentRoundIndex >= lobby.LoadedMessages.Count)
+        if (lobby.RemainingMessages.Count == 0)
         {
             lobby.State = LobbyState.GameEnded;
             return null;
         }
 
-        // Create round from lobby's loaded messages instead of GameService pool
-        var round = CreateRoundFromMessages(lobby.LoadedMessages, 4);
+        // Create round from remaining messages to avoid repeats
+        var round = CreateRoundFromMessages(lobby.RemainingMessages, 4, out var usedMessage);
         if (round == null)
         {
-            _logger.LogWarning($"Failed to create round from {lobby.LoadedMessages.Count} messages");
+            _logger.LogWarning($"Failed to create round from {lobby.RemainingMessages.Count} remaining messages");
             return null;
+        }
+
+        if (usedMessage != null)
+        {
+            lobby.RemainingMessages.Remove(usedMessage);
         }
 
         lobby.CurrentRound = round;
@@ -136,15 +155,24 @@ public class LobbyService
         lobby.CurrentRoundAnsweredPlayers.Clear(); // Reset for new round
         lobby.CurrentRoundAnswerCounter = 0; // Reset answer order counter
 
+        // Reset player answer states for new round
+        foreach (var player in lobby.Players.Values)
+        {
+            player.LastAnswerCorrect = null;
+            player.LastAnswerTimeMs = null;
+        }
+
         return round;
     }
 
-    private GameRound? CreateRoundFromMessages(List<DiscordMessage> messages, int numberOfOptions)
+    private GameRound? CreateRoundFromMessages(List<DiscordMessage> messages, int numberOfOptions, out DiscordMessage? usedMessage)
     {
+        usedMessage = null;
         if (messages.Count < 1) return null;
 
         var random = new Random();
         var selectedMessage = messages[random.Next(messages.Count)];
+        usedMessage = selectedMessage;
 
         var correctAuthor = new GameOption
         {
@@ -152,8 +180,8 @@ public class LobbyService
             AuthorName = selectedMessage.AuthorName
         };
 
-        // Get unique authors for options
-        var uniqueAuthors = messages
+        // Get all unique authors from the messages
+        var allUniqueAuthors = messages
             .GroupBy(m => m.AuthorId)
             .Select(g => new GameOption
             {
@@ -161,14 +189,18 @@ public class LobbyService
                 AuthorName = g.First().AuthorName
             })
             .Where(a => a.AuthorId != selectedMessage.AuthorId)
+            .ToList();
+
+        // Randomly select wrong options from all available authors
+        var incorrectOptions = allUniqueAuthors
             .OrderBy(_ => random.Next())
             .Take(numberOfOptions - 1)
             .ToList();
 
-        // If not enough unique authors, pad with duplicates
-        while (uniqueAuthors.Count < numberOfOptions - 1)
+        // If not enough unique authors, pad with duplicates of the correct author
+        while (incorrectOptions.Count < numberOfOptions - 1)
         {
-            uniqueAuthors.Add(new GameOption
+            incorrectOptions.Add(new GameOption
             {
                 AuthorId = selectedMessage.AuthorId,
                 AuthorName = selectedMessage.AuthorName
@@ -176,7 +208,7 @@ public class LobbyService
         }
 
         var options = new List<GameOption> { correctAuthor };
-        options.AddRange(uniqueAuthors);
+        options.AddRange(incorrectOptions);
         options = options.OrderBy(_ => random.Next()).ToList();
 
         return new GameRound
@@ -197,24 +229,12 @@ public class LobbyService
         double points = 0;
         if (isCorrect)
         {
-            // Track answer order only for correct answers (1st, 2nd, 3rd, etc.)
-            lobby.CurrentRoundAnswerCounter++;
-            player.LastAnswerOrder = lobby.CurrentRoundAnswerCounter;
+            // Calculate max time in milliseconds from the round timer
+            double maxTimeMs = lobby.SecondsPerRound * 1000.0;
 
-            // Award points based on answer order (primary factor):
-            // 1st correct: 100 base, 2nd: 90 base, 3rd: 80 base, etc.
-            double basePoints = Math.Max(10.0, 110.0 - (lobby.CurrentRoundAnswerCounter * 10.0));
-
-            // Apply time penalty (secondary factor): slower answers lose up to -9.99 points
-            // Fast answer (0ms) = 0 penalty, slow answer (30s) = -9.99 penalty
-            // This ensures order is dominant but time still matters within the same order position
-            double timePenalty = (elapsedMs / 30000.0) * 9.99;
-
-            points = Math.Max(0.1, basePoints - timePenalty); // Floor at 0.1 to prevent negative scores
-        }
-        else
-        {
-            player.LastAnswerOrder = null; // No order for incorrect answers
+            // Award points based on speed: 100 points for instant answer, 0 for timeout
+            // Linear deduction: 100 - (elapsed / totalTime * 100)
+            points = Math.Max(0.1, 100.0 - (elapsedMs / maxTimeMs * 100.0));
         }
 
         player.Score += points;
@@ -235,6 +255,8 @@ public class LobbyService
         var lobby = GetLobby(lobbyId);
         if (lobby == null || lobby.CurrentRound == null) return null;
 
+        double maxTimeMs = lobby.SecondsPerRound * 1000.0;
+
         var results = new RoundResults
         {
             RoundNumber = lobby.CurrentRoundIndex,
@@ -244,7 +266,7 @@ public class LobbyService
                     PlayerId = p.Id,
                     PlayerName = p.Name,
                     IsCorrect = p.LastAnswerCorrect ?? false,
-                    PointsEarned = CalculatePoints(p),
+                    PointsEarned = CalculatePoints(p, maxTimeMs),
                     SubmittedAtMs = p.LastAnswerTimeMs ?? 0
                 })
                 .ToList()
@@ -253,19 +275,14 @@ public class LobbyService
         return results;
     }
 
-    private double CalculatePoints(LobbyPlayer player)
+    private double CalculatePoints(LobbyPlayer player, double maxTimeMs = 30000.0)
     {
         if (player.LastAnswerCorrect != true) return 0;
-        var answerOrder = player.LastAnswerOrder ?? 99;
-        var elapsedMs = player.LastAnswerTimeMs ?? 30000;
+        double elapsedMs = player.LastAnswerTimeMs ?? (int)maxTimeMs;
 
-        // Base points from order
-        double basePoints = Math.Max(10.0, 110.0 - (answerOrder * 10.0));
-
-        // Time penalty: slower answers lose up to -9.99 points
-        double timePenalty = (elapsedMs / 30000.0) * 9.99;
-
-        return Math.Max(0.1, basePoints - timePenalty); // Floor at 0.1 to prevent negative scores
+        // Award points based on speed: 100 points for instant answer, 0 for timeout
+        // Linear deduction: 100 - (elapsed / totalTime * 100)
+        return Math.Max(0.1, 100.0 - (elapsedMs / maxTimeMs * 100.0));
     }
 
     public List<LeaderboardEntry> GetLeaderboard(string lobbyId)

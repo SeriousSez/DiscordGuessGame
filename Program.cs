@@ -5,14 +5,32 @@ using DiscordGuessGame.Hubs;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Load environment variables for Discord settings
+var discordSettings = new DiscordSettings
+{
+    ClientId = Environment.GetEnvironmentVariable("DISCORD_CLIENT_ID") ??
+               builder.Configuration["Discord:ClientId"] ?? "",
+    ClientSecret = Environment.GetEnvironmentVariable("DISCORD_CLIENT_SECRET") ??
+                   builder.Configuration["Discord:ClientSecret"] ?? "",
+    BotToken = Environment.GetEnvironmentVariable("DISCORD_BOT_TOKEN") ??
+               builder.Configuration["Discord:BotToken"] ?? "",
+    RedirectUri = builder.Configuration["Discord:RedirectUri"] ??
+                  "https://discord.api.sezginsahin.dk/api/auth/callback"
+};
+
 // Add services to the container.
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
 // Configure Discord settings
-builder.Services.Configure<DiscordSettings>(
-    builder.Configuration.GetSection("Discord"));
+builder.Services.Configure<DiscordSettings>(options =>
+{
+    options.ClientId = discordSettings.ClientId;
+    options.ClientSecret = discordSettings.ClientSecret;
+    options.BotToken = discordSettings.BotToken;
+    options.RedirectUri = discordSettings.RedirectUri;
+});
 
 // Add authentication
 builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)

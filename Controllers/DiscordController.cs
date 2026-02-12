@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using System.Text.Json;
 using DiscordGuessGame.Services;
 
 namespace DiscordGuessGame.Controllers;
@@ -12,15 +13,18 @@ public class DiscordController : ControllerBase
     private readonly DiscordBotService _botService;
     private readonly GameService _gameService;
     private readonly ILogger<DiscordController> _logger;
+    private readonly IHttpClientFactory _httpClientFactory;
 
     public DiscordController(
         DiscordBotService botService,
         GameService gameService,
-        ILogger<DiscordController> logger)
+        ILogger<DiscordController> logger,
+        IHttpClientFactory httpClientFactory)
     {
         _botService = botService;
         _gameService = gameService;
         _logger = logger;
+        _httpClientFactory = httpClientFactory;
     }
 
     [HttpGet("guilds")]
@@ -143,6 +147,71 @@ public class DiscordController : ControllerBase
         {
             _logger.LogError(ex, "Error loading messages");
             return BadRequest(new { error = ex.Message });
+        }
+    }
+
+    [HttpGet("tenor-oembed")]
+    public async Task<IActionResult> GetTenorOembed([FromQuery] string url)
+    {
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            return BadRequest(new { error = "Missing url parameter" });
+        }
+
+        if (!url.StartsWith("https://tenor.com/view/", StringComparison.OrdinalIgnoreCase) &&
+            !url.StartsWith("http://tenor.com/view/", StringComparison.OrdinalIgnoreCase) &&
+            !url.StartsWith("https://www.tenor.com/view/", StringComparison.OrdinalIgnoreCase) &&
+            !url.StartsWith("http://www.tenor.com/view/", StringComparison.OrdinalIgnoreCase))
+        {
+            return BadRequest(new { error = "Only Tenor view URLs are supported" });
+        }
+
+        try
+        {
+            var client = _httpClientFactory.CreateClient();
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("DiscordGuessGame/1.0");
+
+            var oembedUrl = $"https://tenor.com/oembed?url={Uri.EscapeDataString(url)}";
+            using var response = await client.GetAsync(oembedUrl);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                return StatusCode((int)response.StatusCode, "Failed to resolve Tenor media");
+            }
+
+            var json = await response.Content.ReadAsStringAsync();
+            using var doc = JsonDocument.Parse(json);
+
+            string? mediaUrl = null;
+            string? thumbnailUrl = null;
+            string? embedHtml = null;
+
+            if (doc.RootElement.TryGetProperty("url", out var urlElement))
+            {
+                mediaUrl = urlElement.GetString();
+            }
+
+            if (doc.RootElement.TryGetProperty("thumbnail_url", out var thumbElement))
+            {
+                thumbnailUrl = thumbElement.GetString();
+            }
+
+            if (doc.RootElement.TryGetProperty("html", out var htmlElement))
+            {
+                embedHtml = htmlElement.GetString();
+            }
+
+            return Ok(new
+            {
+                url = mediaUrl,
+                thumbnailUrl = thumbnailUrl,
+                html = embedHtml
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error resolving Tenor oEmbed");
+            return StatusCode(500, "Failed to resolve Tenor media");
         }
     }
 
