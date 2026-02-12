@@ -32,6 +32,9 @@ public class DiscordController : ControllerBase
     {
         try
         {
+            Console.WriteLine("GetGuilds called. User authenticated: {0}, Claims count: {1}",
+                User.Identity?.IsAuthenticated ?? false,
+                User.Claims.Count());
             var accessToken = User.FindFirst("AccessToken")?.Value;
             var guilds = await _botService.GetGuildsAsync(accessToken);
             return Ok(guilds.Select(g => new { id = g.Id.ToString(), name = g.Name }));
