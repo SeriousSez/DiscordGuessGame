@@ -254,6 +254,8 @@ public class DiscordBotService
         {
             try
             {
+                var botGuildIds = _client.Guilds.Select(g => g.Id).ToHashSet();
+
                 var httpClient = _httpClientFactory.CreateClient();
                 httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {userAccessToken}");
 
@@ -263,12 +265,22 @@ public class DiscordBotService
                     var json = await response.Content.ReadAsStringAsync();
                     var guilds = JsonSerializer.Deserialize<JsonElement[]>(json);
 
-                    return guilds.Select(g =>
+                    var userGuilds = guilds.Select(g =>
                     {
                         var id = ulong.Parse(g.GetProperty("id").GetString() ?? "0");
                         var name = g.GetProperty("name").GetString() ?? "Unknown";
-                        return (id, name);
-                    }).ToList();
+                        return (Id: id, Name: name);
+                    });
+
+                    if (botGuildIds.Count == 0)
+                    {
+                        _logger.LogWarning("Bot guild cache is empty while filtering user guilds.");
+                        return new List<(ulong, string)>();
+                    }
+
+                    return userGuilds
+                        .Where(g => botGuildIds.Contains(g.Id))
+                        .ToList();
                 }
             }
             catch (Exception ex)
