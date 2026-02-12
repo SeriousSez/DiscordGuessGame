@@ -353,7 +353,7 @@ public class GameLobbyHub : Hub
     }
 
     // Get current lobby state
-    private object GetLobbyState(string lobbyId)
+    public object GetLobbyState(string lobbyId)
     {
         var lobby = _lobbyService.GetLobby(lobbyId);
         if (lobby == null) return new { error = "Lobby not found" };
