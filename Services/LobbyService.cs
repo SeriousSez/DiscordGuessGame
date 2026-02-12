@@ -174,12 +174,6 @@ public class LobbyService
         var selectedMessage = messages[random.Next(messages.Count)];
         usedMessage = selectedMessage;
 
-        var correctAuthor = new GameOption
-        {
-            AuthorId = selectedMessage.AuthorId,
-            AuthorName = selectedMessage.AuthorName
-        };
-
         // Get all unique authors from the messages
         var allUniqueAuthors = messages
             .GroupBy(m => m.AuthorId)
@@ -188,27 +182,30 @@ public class LobbyService
                 AuthorId = g.Key,
                 AuthorName = g.First().AuthorName
             })
+            .ToList();
+
+        // Determine actual number of options to show based on unique author count
+        // 1 unique author → 1 option
+        // 2 unique authors → 2 options
+        // 3 unique authors → 3 options
+        // 4+ unique authors → 4 options (max)
+        var actualOptionsCount = Math.Min(numberOfOptions, allUniqueAuthors.Count);
+
+        // Find the correct author option
+        var correctAuthor = allUniqueAuthors.First(a => a.AuthorId == selectedMessage.AuthorId);
+
+        // Get other unique authors (excluding the correct one)
+        var otherAuthors = allUniqueAuthors
             .Where(a => a.AuthorId != selectedMessage.AuthorId)
-            .ToList();
-
-        // Randomly select wrong options from all available authors
-        var incorrectOptions = allUniqueAuthors
             .OrderBy(_ => random.Next())
-            .Take(numberOfOptions - 1)
+            .Take(actualOptionsCount - 1)
             .ToList();
 
-        // If not enough unique authors, pad with duplicates of the correct author
-        while (incorrectOptions.Count < numberOfOptions - 1)
-        {
-            incorrectOptions.Add(new GameOption
-            {
-                AuthorId = selectedMessage.AuthorId,
-                AuthorName = selectedMessage.AuthorName
-            });
-        }
-
+        // Combine options: correct author + other authors (no duplicates)
         var options = new List<GameOption> { correctAuthor };
-        options.AddRange(incorrectOptions);
+        options.AddRange(otherAuthors);
+
+        // Shuffle the options
         options = options.OrderBy(_ => random.Next()).ToList();
 
         return new GameRound
