@@ -147,8 +147,8 @@ public class AuthController : ControllerBase
 
             // Redirect to frontend
             var frontendUrl = Request.Host.Host.Contains("localhost")
-                ? "http://localhost:4200/features/discord-guess-game"
-                : "https://sezginsahin.dk/features/discord-guess-game";
+                ? "http://localhost:4200/games/discord-guess-game"
+                : "https://sezginsahin.dk/games/discord-guess-game";
 
             return Redirect(frontendUrl);
         }
